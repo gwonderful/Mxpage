@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 06 图片质检"
+  short_description: "对生成图执行商品一致性物理合理性和电商视觉质量检查"
+  default_prompt: "Use $mxpage-review-image to review the latest generated section image."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 03 页面规划"
+  short_description: "规划电商主图详情页模块并建立全项目统一视觉设计规范"
+  default_prompt: "Use $mxpage-plan-page to create the section plan and visual style guide."

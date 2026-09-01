@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 08 项目导出"
+  short_description: "按规划顺序导出通过质检的主图详情图清单与压缩交付包"
+  default_prompt: "Use $mxpage-export-project to package the accepted MxPage images and manifest."

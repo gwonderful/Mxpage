@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 05 图片生成"
+  short_description: "依据已编译提示词和商品参考图生成并保存页面图片版本"
+  default_prompt: "Use $mxpage-generate-image to generate the next planned image with ImageGen."
