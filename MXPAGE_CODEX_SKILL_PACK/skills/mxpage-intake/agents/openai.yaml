@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 01 项目接入"
+  short_description: "整理商品素材并建立可交接的 MxPage 标准项目工作区"
+  default_prompt: "Use $mxpage-intake to create an MxPage-style project workspace from my product assets."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 02 商品分析"
+  short_description: "从主图与参考图生成完整可验证的结构化电商商品分析结果"
+  default_prompt: "Use $mxpage-analyze-product to analyze the product in my MxPage workspace."

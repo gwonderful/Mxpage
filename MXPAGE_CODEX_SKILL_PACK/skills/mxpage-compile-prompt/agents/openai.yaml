@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 04 Prompt 编译"
+  short_description: "将单个页面模块编译为包含完整约束的生产级生图提示词"
+  default_prompt: "Use $mxpage-compile-prompt to compile the next section into a production image prompt."

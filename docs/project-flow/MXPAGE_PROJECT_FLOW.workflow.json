@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "MxPage 商品详情页生成流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": "MXPAGE_PROJECT_FLOW.html",
+    "viewBox": [980, 600]
+  },
+  "lanes": [
+    { "id": "ui", "label": "用户与界面" },
+    { "id": "server", "label": "Next.js API 与领域服务" },
+    { "id": "jobs", "label": "后台任务" },
+    { "id": "resources", "label": "AI Provider 与本地持久化" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "素材接入", "fromCol": 0, "toCol": 1 },
+    { "id": "understand", "label": "理解与规划", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "produce", "label": "生成与交付", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "async_generation", "label": "异步长任务", "lane": "jobs", "fromCol": 4, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": [
+    "product_input",
+    "create_project",
+    "analyze_product",
+    "plan_sections",
+    "submit_generation",
+    "task_runner",
+    "generate_images",
+    "review_export"
+  ],
+  "nodes": [
+    {
+      "id": "product_input",
+      "lane": "ui",
+      "col": 0,
+      "type": "external",
+      "label": "上传主图",
+      "sublabel": "商品与输出配置",
+      "width": 82
+    },
+    {
+      "id": "review_export",
+      "lane": "ui",
+      "col": 5,
+      "type": "frontend",
+      "label": "审阅与导出",
+      "sublabel": "轮询 · 编辑 · ZIP",
+      "width": 84
+    },
+    {
+      "id": "create_project",
+      "lane": "server",
+      "col": 1,
+      "type": "backend",
+      "label": "创建项目",
+      "sublabel": "项目 + 主图",
+      "width": 64
+    },
+    {
+      "id": "analyze_product",
+      "lane": "server",
+      "col": 2,
+      "type": "backend",
+      "label": "分析商品",
+      "sublabel": "视觉 + JSON",
+      "width": 64
+    },
+    {
+      "id": "plan_sections",
+      "lane": "server",
+      "col": 3,
+      "type": "backend",
+      "label": "规划模块",
+      "width": 54
+    },
+    {
+      "id": "submit_generation",
+      "lane": "server",
+      "col": 4,
+      "type": "backend",
+      "label": "提交生成",
+      "width": 54
+    },
+    {
+      "id": "task_runner",
+      "lane": "jobs",
+      "col": 4,
+      "type": "messagebus",
+      "label": "后台任务",
+      "sublabel": "心跳 · 取消 · 恢复",
+      "width": 80
+    },
+    {
+      "id": "generate_images",
+      "lane": "jobs",
+      "col": 5,
+      "type": "backend",
+      "label": "逐模块生成",
+      "sublabel": "Prompt · 生成/重绘",
+      "width": 88
+    },
+    {
+      "id": "text_provider",
+      "lane": "resources",
+      "col": 2,
+      "type": "cloud",
+      "label": "文本模型",
+      "sublabel": "结构化输出",
+      "width": 60
+    },
+    {
+      "id": "image_provider",
+      "lane": "resources",
+      "col": 5,
+      "type": "cloud",
+      "label": "图片模型",
+      "sublabel": "生成 + 编辑",
+      "width": 60
+    },
+    {
+      "id": "sqlite_store",
+      "lane": "resources",
+      "col": 1,
+      "type": "database",
+      "label": "SQLite",
+      "sublabel": "状态与版本",
+      "width": 76
+    },
+    {
+      "id": "asset_storage",
+      "lane": "resources",
+      "col": 4,
+      "type": "database",
+      "label": "文件存储",
+      "sublabel": "原图 · 成品 · 导出",
+      "width": 88
+    }
+  ],
+  "edges": [
+    {
+      "id": "input_create",
+      "from": "product_input",
+      "to": "create_project",
+      "label": "JSON + base64",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "create_analyze",
+      "from": "create_project",
+      "to": "analyze_product",
+      "role": "main",
+      "route": "bottom-channel"
+    },
+    {
+      "id": "analyze_plan",
+      "from": "analyze_product",
+      "to": "plan_sections",
+      "role": "main"
+    },
+    {
+      "id": "plan_submit",
+      "from": "plan_sections",
+      "to": "submit_generation",
+      "role": "main",
+      "route": "bottom-channel"
+    },
+    {
+      "id": "submit_runner",
+      "from": "submit_generation",
+      "to": "task_runner",
+      "label": "202 + taskId",
+      "labelAt": [545, 315],
+      "variant": "emphasis",
+      "role": "async"
+    },
+    {
+      "id": "runner_generate",
+      "from": "task_runner",
+      "to": "generate_images",
+      "role": "main",
+      "route": "straight"
+    },
+    {
+      "id": "generate_review",
+      "from": "generate_images",
+      "to": "review_export",
+      "label": "前端每 2 秒轮询任务",
+      "variant": "emphasis",
+      "role": "return"
+    },
+    {
+      "id": "analysis_ai",
+      "from": "analyze_product",
+      "to": "text_provider",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "planning_ai",
+      "from": "plan_sections",
+      "to": "text_provider",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "generation_ai",
+      "from": "generate_images",
+      "to": "image_provider",
+      "variant": "dashed",
+      "role": "branch",
+      "route": "straight"
+    },
+    {
+      "id": "project_metadata",
+      "from": "create_project",
+      "to": "sqlite_store",
+      "variant": "dashed"
+    },
+    {
+      "id": "image_files",
+      "from": "generate_images",
+      "to": "asset_storage",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "drop"
+    }
+  ]
+}

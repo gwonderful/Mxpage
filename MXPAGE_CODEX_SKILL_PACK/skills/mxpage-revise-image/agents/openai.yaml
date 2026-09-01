@@ -1,0 +1,4 @@
+interface:
+  display_name: "MxPage 07 图片修订"
+  short_description: "根据质检结论非破坏性重绘增强翻译或重新生成图片版本"
+  default_prompt: "Use $mxpage-revise-image to revise the latest image from its review findings."
