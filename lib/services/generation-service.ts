@@ -799,7 +799,7 @@ async function generateSectionImageInternal(
         }
         const summary = summarizeProviderImageFailure(detail, "generate");
         throw new Error(
-          `当前 Provider 没有可用的真实图片生成端点。请前往“模型服务配置”页更换支持图片生成的 Provider，或在规划页手动开启“允许 SVG 兜底预览”。原因摘要：${summary}`,
+          `当前 Provider 没有可用的真实图片生成端点。请前往“模型服务配置”页更换支持图片生成的 Provider，或在规划页手动开启“允许 SVG 兜底预览”。原因摘要：${summary}。原始错误：${detail}`,
         );
       }
 

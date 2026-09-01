@@ -16,7 +16,7 @@ type ProviderContext = {
   models: ProviderModelRecord[];
 };
 
-const VISUAL_PROMPT_AGENT_TIMEOUT_MS = 60_000;
+const VISUAL_PROMPT_AGENT_TIMEOUT_MS = 90_000;
 
 type VisualPromptMode = "ecommerce_section" | "xiaohongshu_page" | "image_edit";
 

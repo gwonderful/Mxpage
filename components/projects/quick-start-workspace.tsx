@@ -118,7 +118,7 @@ export function QuickStartWorkspace() {
           name: buildDraftProjectName(),
           platform: "general_ecommerce",
           style: "generic_clean",
-          description: "由首页快速开始自动创建",
+          description: "",
         }),
       });
       const createdPayload = await createResponse.json();
@@ -142,35 +142,8 @@ export function QuickStartWorkspace() {
         throw new Error(uploadPayload.error?.message ?? "主商品图上传失败");
       }
 
-      const analyzeResponse = await fetch(`/api/projects/${projectId}/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      const analyzePayload = await analyzeResponse.json();
-
-      if (!analyzePayload.success) {
-        const rawErrorCode = String(analyzePayload.error?.code ?? "");
-        const shouldAutoRetry = rawErrorCode === "PROVIDER_TIMEOUT";
-        const errorCode = encodeURIComponent(rawErrorCode);
-        const errorMessage = encodeURIComponent(
-          String(analyzePayload.error?.message ?? "主图已上传，但自动分析未完成。"),
-        );
-
-        toast.warning(
-          shouldAutoRetry
-            ? "主图已上传，正在为你跳转到分析页继续自动重试。"
-            : "主图已上传，已为你跳转到分析页继续处理。",
-        );
-
-        router.push(
-          `/projects/${projectId}/analysis?source=quick-start${shouldAutoRetry ? "&autoRun=1" : ""}&analysisErrorCode=${errorCode}&analysisErrorMessage=${errorMessage}`,
-        );
-        return;
-      }
-
-      toast.success("主图上传完成，AI 已自动完成首轮分析。");
-      router.push(`/projects/${projectId}/analysis`);
+      toast.success("主图上传完成，请完善商品信息后开始分析。");
+      router.push(`/projects/${projectId}/analysis?source=quick-start`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "快速开始失败");
     } finally {
@@ -185,7 +158,7 @@ export function QuickStartWorkspace() {
           上传产品图片
         </h1>
         <p className="mx-auto max-w-2xl text-lg leading-8 text-slate-500 dark:text-slate-400">
-          上传一张产品白底图，AI 将自动分析产品信息
+          上传产品主图，下一步补充商品信息后再开始 AI 分析
         </p>
       </div>
 
@@ -290,7 +263,7 @@ export function QuickStartWorkspace() {
           <div className="mt-6 flex justify-center">
             <Button onClick={handleStart} disabled={submitting || !file} className="min-w-[220px] rounded-full px-8">
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud className="mr-2 h-4 w-4" />}
-              {submitting ? "正在上传并自动分析…" : "开始分析"}
+              {submitting ? "正在上传…" : "上传并继续"}
             </Button>
           </div>
         </div>

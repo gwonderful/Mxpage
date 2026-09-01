@@ -105,14 +105,20 @@ function resolveOpenAiSize(input: { aspectRatio?: "1:1" | "3:4" | "9:16"; size?:
 }
 
 function dataUrlToInlineData(dataUrl: string) {
-  const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
-  if (!match) {
+  const prefix = "data:";
+  const base64Marker = ";base64,";
+  const markerIndex = dataUrl.indexOf(base64Marker, prefix.length);
+  if (
+    !dataUrl.startsWith(prefix) ||
+    markerIndex <= prefix.length ||
+    markerIndex + base64Marker.length >= dataUrl.length
+  ) {
     throw new Error("Invalid base64 image data URL.");
   }
 
   return {
-    mimeType: match[1],
-    data: match[2],
+    mimeType: dataUrl.slice(prefix.length, markerIndex),
+    data: dataUrl.slice(markerIndex + base64Marker.length),
   };
 }
 
@@ -1079,7 +1085,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
         }>("/images/edits", fields, input.images, {
           imageFieldName,
-          timeoutMs: input.timeoutMs ?? 120000,
+          timeoutMs: input.timeoutMs ?? 180000,
           monitor: input.monitor,
           signal: input.signal,
         });

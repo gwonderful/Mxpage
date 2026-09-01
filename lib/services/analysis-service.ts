@@ -191,7 +191,10 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
     const imageUrls = await Promise.all(
       project.assets.slice(0, MAX_ANALYSIS_IMAGES).map((asset) => assetToDataUrl(asset)),
     );
-    const prompt = buildProductAnalysisPrompt(project.assets);
+    const prompt = buildProductAnalysisPrompt(project.assets, {
+      name: project.name,
+      description: project.description,
+    });
 
     let parsedResult: Prisma.JsonObject;
     let rawResult: Prisma.JsonObject;

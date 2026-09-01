@@ -103,23 +103,28 @@ export function AnalysisWorkspace({
     }));
   };
 
+  const persistProjectMeta = async () => {
+    const response = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: projectState.name,
+        platform: projectState.platform,
+        style: projectState.style,
+        description: projectState.description ?? "",
+      }),
+    });
+    const payload = await response.json();
+    if (!payload.success) {
+      throw new Error(payload.error?.message ?? "项目信息保存失败");
+    }
+    return payload.data;
+  };
+
   const saveProjectMeta = async () => {
     setSavingProject(true);
     try {
-      const response = await fetch(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: projectState.name,
-          platform: projectState.platform,
-          style: projectState.style,
-          description: projectState.description ?? "",
-        }),
-      });
-      const payload = await response.json();
-      if (!payload.success) {
-        throw new Error(payload.error?.message ?? "项目信息保存失败");
-      }
+      await persistProjectMeta();
       toast.success("项目信息已保存");
       await refreshProject();
     } catch (error) {
@@ -136,6 +141,7 @@ export function AnalysisWorkspace({
     analysisInFlightRef.current = true;
     setRunning(true);
     try {
+      await persistProjectMeta();
       const response = await fetch(`/api/projects/${project.id}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -251,13 +257,13 @@ export function AnalysisWorkspace({
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>第 2 步：完善项目信息</CardTitle>
-          <CardDescription>头图上传后，先把项目名称、平台、风格和备注补齐，后面的规划和生成都会使用这些信息。</CardDescription>
+          <CardTitle>第 2 步：完善商品信息</CardTitle>
+          <CardDescription>填写商品名称和补充信息。运行分析时会自动保存，并与商品图片一起传给模型。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 md:col-span-2">
-              <Label>项目名称</Label>
+              <Label>商品名称或品类提示</Label>
               <Input value={projectState.name ?? ""} onChange={(event) => updateProjectField("name", event.target.value)} />
             </div>
             <div className="space-y-2">
@@ -289,10 +295,11 @@ export function AnalysisWorkspace({
               </select>
             </div>
             <div className="space-y-2 md:col-span-2">
-              <Label>备注</Label>
+              <Label>商品补充信息（会参与 AI 识别）</Label>
               <Textarea
                 value={projectState.description ?? ""}
                 onChange={(event) => updateProjectField("description", event.target.value)}
+                placeholder="例如：这是儿童保温水杯；圆形孔洞是杯盖滤网，不是扬声器；容量 350ml，304 不锈钢内胆。"
               />
             </div>
           </div>
@@ -350,7 +357,7 @@ export function AnalysisWorkspace({
             </div>
             <Button onClick={() => void runAnalysis()} disabled={running} className="w-full">
               {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-              重新运行 AI 商品分析
+              {analysis ? "保存信息并重新运行 AI 商品分析" : "保存信息并运行 AI 商品分析"}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
               商品分析图最多取前 10 张，请合理规划分析图。
