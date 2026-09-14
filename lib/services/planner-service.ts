@@ -18,6 +18,7 @@ import {
   releaseTaskAbortController,
 } from "@/lib/services/task-service";
 import { contentLanguageOptions, normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
+import { normalizeGenerationRequirements, protectedPlanningMessage } from "@/lib/utils/planning-integrity";
 import { buildDefaultVisualStyleGuide, hasVisualStyleGuide, normalizeVisualStyleGuide, readVisualStyleGuide } from "@/lib/utils/visual-style-guide";
 import type { SectionTypeKey } from "@/types/domain";
 
@@ -776,19 +777,66 @@ async function decidePreviewConfigWithAi(
     contentLanguage: current.contentLanguage,
   });
 
-  await patchProjectModelSnapshot(projectId, {
-    previewConfig: {
-      heroImageCount: decided.heroImageCount,
-      detailSectionCount: decided.detailSectionCount,
-    },
-    previewConfigSource: "ai",
-    previewConfigReason: result.parsed.reason,
-  });
-
   return {
     previewConfig: decided,
     reason: result.parsed.reason,
   };
+}
+
+async function assertReplanningAllowed(db: Pick<Prisma.TransactionClient, "pageSection" | "generationTask">, projectId: string) {
+  const protectedSection = await db.pageSection.findFirst({
+    where: {
+      projectId,
+      OR: [{ currentImageAssetId: { not: null } }, { versions: { some: {} } }],
+    },
+    select: { id: true },
+  });
+  if (protectedSection) throw new Error(protectedPlanningMessage);
+
+  const activeGeneration = await db.generationTask.findFirst({
+    where: { projectId, taskType: { in: ["GENERATE", "REGENERATE"] }, status: { in: ["PENDING", "RUNNING"] } },
+    select: { id: true },
+  });
+  if (activeGeneration) throw new Error("当前项目仍有生成任务，请等待任务结束后再重新规划。");
+}
+
+async function savePlannedSections(
+  taskId: string,
+  projectId: string,
+  sections: NormalizedSection[],
+  snapshotPatch: Record<string, unknown>,
+  taskOutput: Record<string, unknown>,
+) {
+  // Do not hold a database transaction open while waiting for the model.
+  return prisma.$transaction(async (tx) => {
+    await assertTaskNotCanceled(taskId, tx);
+    await assertReplanningAllowed(tx, projectId);
+    const current = await tx.project.findUnique({ where: { id: projectId }, select: { modelSnapshot: true } });
+    if (!current) throw new Error("Project not found.");
+    const snapshot = current.modelSnapshot && typeof current.modelSnapshot === "object" && !Array.isArray(current.modelSnapshot)
+      ? current.modelSnapshot : {};
+    await tx.pageSection.deleteMany({ where: { projectId } });
+    await tx.pageSection.createMany({
+      data: sections.map((section) => ({
+        projectId,
+        sectionKey: section.sectionKey,
+        type: section.type as never,
+        title: section.title,
+        goal: section.goal,
+        copy: section.copy,
+        visualPrompt: section.visualPrompt,
+        order: section.order,
+        editableData: section.editableData as Prisma.InputJsonValue,
+      })),
+    });
+    await tx.project.update({
+      where: { id: projectId },
+      data: { status: "PLANNED", modelSnapshot: { ...snapshot, ...snapshotPatch } as Prisma.InputJsonValue },
+    });
+    const saved = await tx.pageSection.findMany({ where: { projectId }, orderBy: { order: "asc" } });
+    await completeTask(taskId, { ...taskOutput, sections: saved }, tx);
+    return saved;
+  });
 }
 
 export async function planSections(
@@ -808,6 +856,10 @@ export async function planSections(
     throw new Error("请先完成商品分析，再进行页面规划。");
   }
 
+  await assertReplanningAllowed(prisma, projectId);
+  const plannedGenerationRequirements = normalizeGenerationRequirements(
+    (project.analysis.normalizedResult as Record<string, unknown>).generationRequirements,
+  );
   const { provider, adapter } = await getProviderAdapter();
   const model = pickMultimodalPlanningModel(provider.models, options?.modelId);
 
@@ -840,8 +892,6 @@ export async function planSections(
       const decision = await decidePreviewConfigWithAi(projectId, model, taskSignal);
       previewConfig = decision.previewConfig;
       previewDecisionReason = decision.reason;
-    } else {
-      await patchProjectModelSnapshot(projectId, { previewConfig });
     }
 
     const planningReferenceImages = await collectPlanningReferenceImages(project.assets as PlanningAsset[]);
@@ -869,7 +919,6 @@ export async function planSections(
     });
 
     await assertTaskNotCanceled(task.id);
-    await prisma.pageSection.deleteMany({ where: { projectId } });
 
     const rawSections = Array.isArray(result.parsed.sections) ? result.parsed.sections : [];
     const sections =
@@ -887,39 +936,15 @@ export async function planSections(
           );
     const visualStyleGuide = resolvePlanningVisualStyleGuide(project, result.parsed.visualStyleGuide);
 
-    await prisma.pageSection.createMany({
-      data: sections.map((section) => ({
-        projectId,
-        sectionKey: section.sectionKey,
-        type: section.type as never,
-        title: section.title,
-        goal: section.goal,
-        copy: section.copy,
-        visualPrompt: section.visualPrompt,
-        order: section.order,
-        editableData: section.editableData as Prisma.InputJsonValue,
-      })),
-    });
-
     await assertTaskNotCanceled(task.id);
-    await prisma.project.update({
-      where: { id: projectId },
-      data: {
-        status: "PLANNED",
-      },
-    });
-    await patchProjectModelSnapshot(projectId, {
+    const saved = await savePlannedSections(task.id, projectId, sections, {
       planningModelId: model,
+      previewConfig,
+      plannedGenerationRequirements,
       previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
       previewConfigReason: previewDecisionReason,
       visualStyleGuide,
-    });
-
-    const saved = await prisma.pageSection.findMany({
-      where: { projectId },
-      orderBy: { order: "asc" },
-    });
-    await completeTask(task.id, { sections: saved, previewConfig, previewDecisionReason, visualStyleGuide });
+    }, { previewConfig, previewDecisionReason, visualStyleGuide });
     return {
       sections: saved,
       previewConfig,
@@ -934,49 +959,22 @@ export async function planSections(
     if (shouldFallbackToTemplatePlan(error)) {
       try {
         await assertTaskNotCanceled(task.id);
-        await prisma.pageSection.deleteMany({ where: { projectId } });
         const fallbackSections = buildFallbackPlanFromTemplates(
           previewConfig.heroImageCount,
           previewConfig.detailSectionCount,
           project.analysis.normalizedResult as Record<string, unknown>,
         );
-        await prisma.pageSection.createMany({
-          data: fallbackSections.map((section) => ({
-            projectId,
-            sectionKey: section.sectionKey,
-            type: section.type as never,
-            title: section.title,
-            goal: section.goal,
-            copy: section.copy,
-            visualPrompt: section.visualPrompt,
-            order: section.order,
-            editableData: section.editableData as Prisma.InputJsonValue,
-          })),
-        });
-
         await assertTaskNotCanceled(task.id);
         const fallbackVisualStyleGuide = resolvePlanningVisualStyleGuide(project);
 
-        await prisma.project.update({
-          where: { id: projectId },
-          data: {
-            status: "PLANNED",
-          },
-        });
-        await patchProjectModelSnapshot(projectId, {
+        const saved = await savePlannedSections(task.id, projectId, fallbackSections, {
           planningModelId: model,
+          previewConfig,
+          plannedGenerationRequirements,
           previewConfigSource: options?.autoDecideCounts ? "ai" : "manual",
           previewConfigReason: `${previewDecisionReason ? `${previewDecisionReason}；` : ""}AI 返回结构不完整，已自动切换为模板规划。`,
           visualStyleGuide: fallbackVisualStyleGuide,
-        });
-
-        const saved = await prisma.pageSection.findMany({
-          where: { projectId },
-          orderBy: { order: "asc" },
-        });
-
-        await completeTask(task.id, {
-          sections: saved,
+        }, {
           previewConfig,
           previewDecisionReason,
           fallbackMode: "template_plan",
@@ -994,8 +992,9 @@ export async function planSections(
         if (fallbackError instanceof Error && fallbackError.message === "Task canceled.") {
           throw fallbackError;
         }
-        await failTask(task.id, "AI 规划结果格式不完整，且模板规划回退失败。");
-        throw new Error("AI 规划结果格式不完整，请稍后重试。");
+        const message = fallbackError instanceof Error ? fallbackError.message : "AI 规划结果格式不完整，且模板规划回退失败。";
+        await failTask(task.id, message);
+        throw new Error(message);
       }
     }
 

@@ -1,6 +1,6 @@
 # MxPage 项目文档
 
-本目录集中存放 2026 年 9 月 1 日生成的非 Skill 文档与可视化产物。
+本目录集中存放项目的非 Skill 文档与可视化产物。
 
 ## 商业计划
 
@@ -9,6 +9,8 @@
 ## 分析文档
 
 - [MxPage 与 Codex 直接生图对比](analysis/MXPAGE_VS_CODEX_IMAGE_GENERATION.md)
+- [稳定性、出图速度与 Token 消耗审计（2026-09-14）](analysis/MXPAGE_BUG_PERFORMANCE_TOKEN_AUDIT.md)
+- [Bug 修复与验证记录（2026-09-14）](analysis/MXPAGE_BUG_FIX_VERIFICATION.md)
 
 ## 项目流程
 

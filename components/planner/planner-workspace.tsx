@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { contentLanguageLabels, type ContentLanguage } from "@/lib/utils/content-language";
+import { getPlanningRequirementsSync, protectedPlanningMessage } from "@/lib/utils/planning-integrity";
 import { buildDefaultVisualStyleGuide, normalizeVisualStyleGuide, type VisualStyleGuide } from "@/lib/utils/visual-style-guide";
 import { sectionTypeLabels } from "@/types/domain";
 
@@ -210,15 +211,6 @@ function getGenerationRequirements(project: any) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function hasSectionsSyncedGenerationRequirements(sections: any[], generationRequirements: string) {
-  if (!generationRequirements) return true;
-  if (!sections.length) return false;
-
-  const requirementMarkers = ["生图补充要求", ...generationRequirements.split(/\s+/).filter((item) => item.length >= 4).slice(0, 3)];
-  const combinedPrompt = sections.map((section) => section.visualPrompt ?? "").join("\n");
-  return requirementMarkers.some((marker) => combinedPrompt.includes(marker));
-}
-
 function progressPercent(progress: BulkProgressState | null) {
   if (!progress || progress.total === 0) {
     return 0;
@@ -361,10 +353,8 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
   const structureMatchesConfig =
     heroSections.length === previewConfig.heroImageCount &&
     detailSections.length === previewConfig.detailSectionCount;
-  const planningSyncedGenerationRequirements = useMemo(
-    () => hasSectionsSyncedGenerationRequirements(sections, generationRequirements),
-    [generationRequirements, sections],
-  );
+  const planningRequirementsSync = getPlanningRequirementsSync(projectState.modelSnapshot, generationRequirements, sections.length > 0);
+  const hasProtectedPlanningResults = sections.some((section: any) => section.currentImageAssetId || section.imageUrl || section.versions?.length);
 
   const refreshProject = async () => {
     const response = await fetch(`/api/projects/${project.id}`);
@@ -594,6 +584,10 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
     }
   };
   const autoPlan = async () => {
+    if (hasProtectedPlanningResults) {
+      toast.error(protectedPlanningMessage);
+      return;
+    }
     setPlanningTaskId(null);
     setPlanning(true);
     setPlanningProgress({
@@ -1008,19 +1002,33 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                     <NoticeCard
                       variant="warning"
                       title="当前结构与分析页配置不一致"
-                      description="请运行下方的 AI 自动规划，让系统按分析页保存的数量与比例重新整理头图和详情页结构。"
+                      description={hasProtectedPlanningResults
+                        ? "请编辑现有模块或新建项目重新规划；为保护已有图片与历史版本，当前项目不能整页重新规划。"
+                        : "请运行下方的 AI 自动规划，让系统按分析页保存的数量与比例重新整理头图和详情页结构。"}
                     />
                     <div className="hidden">
-                      当前结构与分析页配置不一致，请运行下方的 AI 自动规划同步结构。
+                      当前结构与分析页配置不一致。
                     </div>
                     </>
                   ) : null}
-                  {generationRequirements && !planningSyncedGenerationRequirements ? (
+                  {planningRequirementsSync === "outdated" ? (
                     <NoticeCard
                       variant="warning"
                       title="生图补充要求尚未同步到当前规划"
-                      description="分析页已保存多角度、多场景等生图要求，但当前模块规划仍是旧版本。请点击下方 AI 自动规划，让系统重新拆分头图和详情页后再生成图片。"
+                      description={hasProtectedPlanningResults
+                        ? "分析页要求已发生变化。请编辑现有模块或新建项目重新规划，已有图片与历史版本会被保留。"
+                        : "分析页要求与当前规划采用的要求不同，请重新规划后再生成图片。"}
                     />
+                  ) : null}
+                  {generationRequirements && planningRequirementsSync === "unknown" ? (
+                    <NoticeCard
+                      variant="info"
+                      title="旧规划未记录补充要求版本"
+                      description="暂时无法确认当前规划采用了哪一版要求，请核对模块内容；这不表示要求未生效，无需仅因此重新规划。"
+                    />
+                  ) : null}
+                  {hasProtectedPlanningResults ? (
+                    <NoticeCard variant="info" title="已有生成成果已保护" description={protectedPlanningMessage} />
                   ) : null}
                   <Link
                     href={`/projects/${project.id}/analysis`}
@@ -1082,7 +1090,7 @@ export function PlannerWorkspace({ project }: PlannerWorkspaceProps) {
                 ) : (
                   <Button
                     onClick={autoPlan}
-                    disabled={bulkGenerating}
+                    disabled={bulkGenerating || hasProtectedPlanningResults}
                     className="h-10 shrink-0 whitespace-nowrap px-5 text-sm md:min-w-[240px]"
                   >
                     <Sparkles className="mr-2 h-4 w-4" />
