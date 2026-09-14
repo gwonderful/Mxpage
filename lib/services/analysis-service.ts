@@ -136,6 +136,8 @@ async function repairAnalysisOutput(input: {
 function normalizeAnalysisProviderError(error: unknown): never {
   const detail = error instanceof Error ? error.message : "Unknown analysis error";
 
+  if (detail.startsWith("CODEX:")) throw error;
+
   if (/monthly spending limit|spending limit|billing|quota|insufficient_quota/i.test(detail)) {
     throw new Error("当前 API Key 的分析额度已用尽。请前往代理商控制台提高或移除月度限额，或更换可用的 API Key。");
   }

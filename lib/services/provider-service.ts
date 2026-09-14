@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
 import { OpenAICompatibleAdapter } from "@/lib/ai/adapters/openai-compatible";
+import { CodexAdapter } from "@/lib/ai/adapters/codex";
+import { CODEX_BASE_URL, inspectCodex, isCodexProvider } from "@/lib/ai/codex-app-server";
+import type { ProviderAdapter } from "@/lib/ai/provider-client";
 import { normalizeDetectedModels } from "@/lib/ai/capability-detector";
 import { recommendDefaultModels } from "@/lib/ai/model-matcher";
 import { encryptSecret } from "@/lib/utils/crypto";
@@ -48,7 +51,7 @@ type ProviderAdapterContext = {
     models: RuntimeProviderModel[];
   };
   apiKey: string;
-  adapter: OpenAICompatibleAdapter;
+  adapter: ProviderAdapter;
 };
 
 type ProviderModelSnapshot = {
@@ -121,6 +124,7 @@ function hydrateProviderModels<T extends { capabilities: any }>(models: T[]) {
 }
 
 function shouldIncludeOpenAiImagePresets(baseUrl: string, models: Array<{ modelId?: string; id?: string }>) {
+  if (isCodexProvider(baseUrl)) return false;
   const text = `${baseUrl} ${models.map((model) => model.modelId ?? model.id ?? "").join(" ")}`.toLowerCase();
   return /openai|chatgpt|gpt-|(^|[^a-z])o[1345](?:[^a-z]|$)|dall[-_\s]?e/.test(text);
 }
@@ -469,6 +473,10 @@ export async function getProviderAdapter(providerId?: string): Promise<ProviderA
   }
 
   const runtimeCredentials = getRequestProviderCredentials();
+  if (isCodexProvider(provider.baseUrl)) {
+    if (!runtimeCredentials.localCodexAllowed) throw new Error("CODEX: 账号模式仅接受本机同源请求，请使用 localhost 或 127.0.0.1 打开项目。");
+    return { provider: { ...provider, models: hydrateProviderModels(provider.models) as unknown as RuntimeProviderModel[] }, apiKey: "", adapter: new CodexAdapter() };
+  }
   const apiKey = runtimeCredentials.apiKey?.trim() ?? "";
   if (!apiKey) {
     throw new Error("API Key is not configured in this browser. Configure it in Provider settings first.");
@@ -485,4 +493,30 @@ export async function getProviderAdapter(providerId?: string): Promise<ProviderA
     apiKey,
     adapter: new OpenAICompatibleAdapter(baseUrl, apiKey),
   };
+}
+
+export async function activateLocalCodex() {
+  const status = await inspectCodex();
+  if (!status.imageGeneration) throw new Error("CODEX: 当前账号未提供图片生成能力，无法启用完整制图流程。");
+  const available = status.models.filter((model) => model.inputModalities?.includes("image"));
+  const model = available.find((item) => item.isDefault) ?? available[0];
+  if (!model) throw new Error("CODEX: 当前账号没有可用于商品图片分析的模型。");
+  // Store one agent model for all roles; image generation is a tool of this agent,
+  // not a separately billed Images API model.
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.providerConfig.findFirst({ where: { baseUrl: CODEX_BASE_URL } });
+    await tx.providerConfig.updateMany({ data: { isActive: false } });
+    const data = { name: "本机 Codex 账号", baseUrl: CODEX_BASE_URL, apiKeyEncrypted: encryptSecret(""), isActive: true };
+    const provider = existing
+      ? await tx.providerConfig.update({ where: { id: existing.id }, data })
+      : await tx.providerConfig.create({ data });
+    await tx.modelProfile.deleteMany({ where: { providerConfigId: provider.id } });
+    await tx.modelProfile.create({ data: {
+      providerConfigId: provider.id, modelId: model.model, label: model.displayName || model.model,
+      capabilities: { text: true, vision: true, image_gen: true, image_edit: true, real_image_gen: true, real_image_edit: true },
+      roles: { analysis: true, planning: true, hero_image: true, detail_image: true, image_edit: true },
+      isAvailable: true, isDefaultAnalysis: true, isDefaultPlanning: true, isDefaultHeroImage: true, isDefaultDetailImage: true, isDefaultImageEdit: true,
+    } });
+  });
+  return { model: model.model, planType: status.planType, imageGeneration: status.imageGeneration };
 }

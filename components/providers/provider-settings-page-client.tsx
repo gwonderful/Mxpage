@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ProviderSettings } from "@/components/providers/provider-settings";
+import { CodexAccountSettings } from "@/components/providers/codex-account-settings";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -122,8 +123,10 @@ export default function ProviderSettingsPageClient() {
       <PageHeader
         eyebrow="模型服务配置"
         title="Provider 与模型配置中心"
-        description="页面展示已保存的 Provider 与模型快照。API Key 仅保存在当前浏览器；私有化部署可通过 LOCK_BASE_URL 锁定统一 API 通道。"
+        description="选择使用本机 Codex 登录账号，或配置独立的 API 服务。"
       />
+
+      <CodexAccountSettings />
 
       {loading ? (
         <LoadingState />
@@ -135,7 +138,10 @@ export default function ProviderSettingsPageClient() {
           </CardContent>
         </Card>
       ) : (
-        <ProviderSettings initialProviders={providers} runtimeConfig={runtimeConfig} />
+        <details className="space-y-4" open={!providers.some((provider) => provider.isActive && provider.baseUrl === "codex://local")}>
+          <summary className="cursor-pointer text-sm font-medium">API 服务配置</summary>
+          <ProviderSettings initialProviders={providers.filter((provider) => provider.baseUrl !== "codex://local")} runtimeConfig={runtimeConfig} />
+        </details>
       )}
     </div>
   );

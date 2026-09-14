@@ -170,7 +170,7 @@ function buildFallbackPrompt(input: BuildVisualPromptInput) {
 
 function shouldFallback(error: unknown) {
   if (!(error instanceof Error)) return false;
-  return /timed out|timeout|temperature|unsupported|invalid json|structured|parse|network error|fetch failed/i.test(error.message);
+  return /^CODEX: 请求超时|timed out|timeout|temperature|unsupported|invalid json|structured|parse|network error|fetch failed/i.test(error.message);
 }
 
 export async function buildVisualPromptWithAgent(input: BuildVisualPromptInput) {

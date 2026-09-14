@@ -55,6 +55,7 @@ export function handleRouteError(error: unknown) {
   }
 
   if (error instanceof Error) {
+    if (error.message.startsWith("CODEX:")) return fail("CODEX_ERROR", error.message.slice(6).trim(), null, 503);
     const providerError = mapProviderError(error);
     if (providerError) {
       return fail(providerError.code, providerError.message, { rawMessage: error.message }, providerError.status);
