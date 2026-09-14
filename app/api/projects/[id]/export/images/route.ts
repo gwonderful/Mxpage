@@ -1,5 +1,5 @@
-import { buildImageArchive } from "@/lib/services/export-service";
-import { handleRouteError } from "@/lib/utils/route";
+import { buildImageArchive, IncompleteExportError } from "@/lib/services/export-service";
+import { fail, handleRouteError } from "@/lib/utils/route";
 
 export async function GET(_request: Request, context: { params: { id: string } }) {
   try {
@@ -11,6 +11,9 @@ export async function GET(_request: Request, context: { params: { id: string } }
       },
     });
   } catch (error) {
+    if (error instanceof IncompleteExportError) {
+      return fail("EXPORT_INCOMPLETE", error.message, error.details, 409);
+    }
     return handleRouteError(error);
   }
 }

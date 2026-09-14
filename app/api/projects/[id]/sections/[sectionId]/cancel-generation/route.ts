@@ -44,8 +44,14 @@ export async function POST(_request: Request, context: { params: { id: string; s
       await cancelTask(task.id);
     }
 
-    await prisma.pageSection.update({
-      where: { id: section.id },
+    // Also repairs orphaned GENERATING state, without overwriting a newer image or worker.
+    await prisma.pageSection.updateMany({
+      where: {
+        id: section.id,
+        projectId: context.params.id,
+        currentImageAssetId: section.currentImageAssetId,
+        tasks: { none: { status: { in: ["PENDING", "RUNNING"] } } },
+      },
       data: { status: section.currentImageAssetId ? "SUCCESS" : "IDLE" },
     });
 

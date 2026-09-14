@@ -349,32 +349,50 @@ async function resolveReferenceAssets(referenceAssetIds: string[]) {
 }
 
 async function persistSectionVersion(params: {
+  taskId: string;
+  projectId: string;
   sectionId: string;
   imageAssetId: string;
   promptSnapshot: string;
   copySnapshot: string;
+  taskOutput: Record<string, unknown>;
 }) {
-  const lastVersion = await prisma.sectionVersion.findFirst({
-    where: { sectionId: params.sectionId },
-    orderBy: { versionNumber: "desc" },
-  });
+  return prisma.$transaction(async (tx) => {
+    // The task guard takes the same write lock as cancellation. Activation and
+    // task completion must either commit together or leave the old image intact.
+    await assertTaskNotCanceled(params.taskId, tx);
+    const lastVersion = await tx.sectionVersion.findFirst({
+      where: { sectionId: params.sectionId },
+      orderBy: { versionNumber: "desc" },
+    });
 
-  const versionNumber = (lastVersion?.versionNumber ?? 0) + 1;
+    const versionNumber = (lastVersion?.versionNumber ?? 0) + 1;
 
-  await prisma.sectionVersion.updateMany({
-    where: { sectionId: params.sectionId },
-    data: { isActive: false },
-  });
+    await tx.sectionVersion.updateMany({
+      where: { sectionId: params.sectionId },
+      data: { isActive: false },
+    });
 
-  return prisma.sectionVersion.create({
-    data: {
-      sectionId: params.sectionId,
-      versionNumber,
-      promptSnapshot: { prompt: params.promptSnapshot },
-      copySnapshot: { copy: params.copySnapshot },
-      imageAssetId: params.imageAssetId,
-      isActive: true,
-    },
+    const version = await tx.sectionVersion.create({
+      data: {
+        sectionId: params.sectionId,
+        versionNumber,
+        promptSnapshot: { prompt: params.promptSnapshot },
+        copySnapshot: { copy: params.copySnapshot },
+        imageAssetId: params.imageAssetId,
+        isActive: true,
+      },
+    });
+    await tx.pageSection.update({
+      where: { id: params.sectionId },
+      data: { status: "SUCCESS", currentImageAssetId: params.imageAssetId },
+    });
+    await tx.project.update({
+      where: { id: params.projectId },
+      data: { status: "EDITING" },
+    });
+    await completeTask(params.taskId, { ...params.taskOutput, imageAssetId: params.imageAssetId, versionId: version.id }, tx);
+    return version;
   });
 }
 
@@ -414,6 +432,7 @@ async function generateWithFallback(params: {
         attemptedModels: params.candidateModels,
       };
     } catch (error) {
+      if (params.signal?.aborted) throw new Error("Task canceled.");
       if (isTaskCanceledError(error)) throw error;
       const message = error instanceof Error ? error.message : "Unknown image generation error";
       errors.push(`${model}: ${message}`);
@@ -465,6 +484,7 @@ async function editWithFallback(params: {
         attemptedModels: params.candidateModels,
       };
     } catch (error) {
+      if (params.signal?.aborted) throw new Error("Task canceled.");
       if (isTaskCanceledError(error)) throw error;
       const message = error instanceof Error ? error.message : "Unknown image edit error";
       errors.push(`${model}: ${message}`);
@@ -511,6 +531,7 @@ async function generateSvgLayoutSpec(params: {
         parsed,
       };
     } catch (error) {
+      if (params.signal?.aborted) throw new Error("Task canceled.");
       if (isTaskCanceledError(error)) throw error;
       errors.push(`${model}: ${error instanceof Error ? error.message : "Unknown SVG layout error"}`);
     }
@@ -788,6 +809,7 @@ async function generateSectionImageInternal(
       usedModel = generation.model;
       generationMode = "image_api";
     } catch (error) {
+      await assertTaskNotCanceled(task.id);
       if (isTaskCanceledError(error)) throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image generation error";
@@ -838,39 +860,28 @@ async function generateSectionImageInternal(
     }
 
     version = await persistSectionVersion({
+      taskId: task.id,
+      projectId,
       sectionId,
       imageAssetId: imageAsset.id,
       promptSnapshot: prompt,
       copySnapshot: section.copy,
-    });
-
-    await prisma.pageSection.update({
-      where: { id: sectionId },
-      data: {
-        status: "SUCCESS",
-        currentImageAssetId: imageAsset.id,
+      taskOutput: {
+        usedModel,
+        generationMode,
+        sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
       },
-    });
-
-    await prisma.project.update({
-      where: { id: projectId },
-      data: {
-        status: "EDITING",
-      },
-    });
-
-    await completeTask(task.id, {
-      imageAssetId: imageAsset.id,
-      versionId: version.id,
-      usedModel,
-      generationMode,
-      sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
     });
 
     return { imageAsset, version, usedModel, generationMode };
   } catch (error) {
-    await prisma.pageSection.update({
-      where: { id: sectionId },
+    if (taskSignal.aborted) error = new Error("Task canceled.");
+    await prisma.pageSection.updateMany({
+      where: {
+        id: sectionId,
+        currentImageAssetId: section.currentImageAssetId,
+        tasks: { none: { id: { not: task.id }, status: { in: ["PENDING", "RUNNING"] }, taskType: { in: ["GENERATE", "REGENERATE"] } } },
+      },
       data: {
         status: isTaskCanceledError(error) ? (section.currentImageAssetId ? "SUCCESS" : "IDLE") : "FAILED",
       },
@@ -1000,13 +1011,14 @@ export async function editSectionImage(
       allowSvgFallback: generationSettings.allowSvgFallback,
     },
   });
-
-  await prisma.pageSection.update({
-    where: { id: sectionId },
-    data: { status: "GENERATING" },
-  });
+  const taskSignal = registerTaskAbortController(task.id);
 
   try {
+    await assertTaskNotCanceled(task.id);
+    await prisma.pageSection.update({
+      where: { id: sectionId },
+      data: { status: "GENERATING" },
+    });
     const basePrompt = buildImageEditPrompt(
       section,
       productReferenceAssets as ProductAsset[],
@@ -1032,7 +1044,9 @@ export async function editSectionImage(
       projectId,
       sectionId,
       operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
+      signal: taskSignal,
     });
+    await assertTaskNotCanceled(task.id);
 
     let imageAsset;
     let version;
@@ -1055,7 +1069,9 @@ export async function editSectionImage(
         projectId,
         sectionId,
         operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : "repaint_section_image",
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(task.id);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1072,10 +1088,13 @@ export async function editSectionImage(
           primaryReferenceAssetId: productReferenceAssets[0]?.id ?? null,
         },
       });
+      await assertTaskNotCanceled(task.id);
 
       usedModel = generation.model;
       generationMode = "image_api";
     } catch (error) {
+      await assertTaskNotCanceled(task.id);
+      if (isTaskCanceledError(error)) throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image edit error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -1097,7 +1116,9 @@ export async function editSectionImage(
         referenceAssets: productReferenceAssets,
         aspectRatio: sectionAspectRatio,
         contentLanguage: generationSettings.contentLanguage,
+        signal: taskSignal,
       });
+      await assertTaskNotCanceled(task.id);
 
       imageAsset = await saveGeneratedImage({
         projectId,
@@ -1119,56 +1140,50 @@ export async function editSectionImage(
           imageApiError: error instanceof Error ? error.message : "Unknown image edit api error",
         },
       });
+      await assertTaskNotCanceled(task.id);
 
       usedModel = fallback.model;
       generationMode = "svg_fallback";
     }
 
     version = await persistSectionVersion({
+      taskId: task.id,
+      projectId,
       sectionId,
       imageAssetId: imageAsset.id,
       promptSnapshot: prompt,
       copySnapshot: section.copy,
-    });
-
-    await prisma.pageSection.update({
-      where: { id: sectionId },
-      data: {
-        status: "SUCCESS",
-        currentImageAssetId: imageAsset.id,
+      taskOutput: {
+        mode: "edit_image",
+        editMode,
+        targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
+        usedModel,
+        generationMode,
+        baseImageAssetId: section.currentImageAssetId,
+        sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
       },
-    });
-
-    await prisma.project.update({
-      where: { id: projectId },
-      data: {
-        status: "EDITING",
-      },
-    });
-
-    await completeTask(task.id, {
-      mode: "edit_image",
-      editMode,
-      targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
-      imageAssetId: imageAsset.id,
-      versionId: version.id,
-      usedModel,
-      generationMode,
-      baseImageAssetId: section.currentImageAssetId,
-      sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),
     });
 
     return { imageAsset, version, usedModel, generationMode, editMode, targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined };
   } catch (error) {
-    await prisma.pageSection.update({
-      where: { id: sectionId },
+    if (taskSignal.aborted) error = new Error("Task canceled.");
+    await prisma.pageSection.updateMany({
+      where: {
+        id: sectionId,
+        currentImageAssetId: section.currentImageAssetId,
+        tasks: { none: { id: { not: task.id }, status: { in: ["PENDING", "RUNNING"] }, taskType: { in: ["GENERATE", "REGENERATE"] } } },
+      },
       data: {
-        status: "FAILED",
+        status: isTaskCanceledError(error) ? (section.currentImageAssetId ? "SUCCESS" : "IDLE") : "FAILED",
       },
     });
 
-    await failTask(task.id, error instanceof Error ? error.message : "Image edit failed");
+    if (!isTaskCanceledError(error)) {
+      await failTask(task.id, error instanceof Error ? error.message : "Image edit failed");
+    }
     throw error;
+  } finally {
+    releaseTaskAbortController(task.id);
   }
 }
 

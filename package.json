@@ -6,6 +6,8 @@
   "author": "灵矩绘境 · MxPage",
   "main": "desktop/main.cjs",
   "scripts": {
+    "test": "node ./scripts/run-tests.cjs",
+    "typecheck": "tsc --noEmit --incremental false",
     "dev": "node ./scripts/run-next-safe.cjs dev",
     "build": "npm run prisma:generate && node ./scripts/run-next-safe.cjs build",
     "start": "node ./scripts/run-next-safe.cjs start",

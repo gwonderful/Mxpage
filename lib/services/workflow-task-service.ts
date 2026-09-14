@@ -53,6 +53,7 @@ export type TranslatePageTaskInput = {
 export type GenerateAllSectionsTaskInput = {
   projectId: string;
   mode?: "all" | "missing";
+  retryOfTaskId?: string;
 };
 
 type StoredBatchFile = {
@@ -392,6 +393,7 @@ async function runTranslatePageTask(taskId: string, input: TranslatePageTaskInpu
 
 function isProviderWideImageFailure(message: string) {
   return (
+    /quota|billing|spending limit|rate.?limit|too many requests|unauthorized|invalid.?api.?key|authentication|\b(?:401|403|429)\b|额度|限流|登录|认证/i.test(message) ||
     message.includes("当前 Provider 没有可用的真实图片生成端点") ||
     message.includes("当前 Provider 没有识别到可用于真实图片生成的模型")
   );
@@ -426,7 +428,9 @@ async function runGenerateAllSectionsTask(taskId: string, input: GenerateAllSect
   });
 
   const heartbeatTimer = setInterval(() => {
-    void updateTaskProgress(taskId, { heartbeatAt: new Date().toISOString() });
+    void updateTaskProgress(taskId, { heartbeatAt: new Date().toISOString() }).catch(() => {
+      console.error("[Task Runner] Failed to update generation heartbeat", taskId);
+    });
   }, 15_000);
 
   try {
@@ -460,8 +464,13 @@ async function runGenerateAllSectionsTask(taskId: string, input: GenerateAllSect
             !Array.isArray(parentTask.outputPayload)
               ? (parentTask.outputPayload as Record<string, unknown>)
               : {};
-          if (parentTask?.status === "CANCELED" || parentOutput.cancelSectionId === section.id) {
+          if (!parentTask || !["PENDING", "RUNNING"].includes(parentTask.status)) {
             await cancelTask(currentTaskId);
+            throw new Error(parentTask?.status === "CANCELED" ? "Task canceled." : "Task stopped.");
+          }
+          if (parentOutput.cancelSectionId === section.id) {
+            await cancelTask(currentTaskId);
+            throw new Error("Task canceled.");
           }
         };
         const result = section.currentImageAssetId
@@ -511,7 +520,7 @@ async function runGenerateAllSectionsTask(taskId: string, input: GenerateAllSect
       }
     }
 
-    await completeTask(taskId, {
+    const output = {
       totalItems: sections.length,
       completedItems,
       failedItems,
@@ -522,7 +531,12 @@ async function runGenerateAllSectionsTask(taskId: string, input: GenerateAllSect
       currentTaskId: null,
       cancelSectionId: null,
       currentStep: "generate_all_finished",
-    });
+    };
+    if (failedItems > 0 || canceledItems > 0) {
+      await failTask(taskId, `批量生成未全部完成：成功 ${completedItems}，失败 ${failedItems}，取消 ${canceledItems}。可补生成未完成模块。`, output);
+    } else {
+      await completeTask(taskId, output);
+    }
   } catch (error) {
     if (error instanceof Error && error.message === "Task canceled.") return;
     await failTask(taskId, error instanceof Error ? error.message : "批量生成失败", {
@@ -750,55 +764,66 @@ export async function retryWorkflowTask(taskId: string, credentials: RequestProv
   if (!task) {
     throw new Error("Task not found.");
   }
-  if (task.status === "RUNNING") {
-    throw new Error("Task is already running.");
-  }
-
   const input = (task.inputPayload ?? {}) as Record<string, unknown>;
-  await prisma.generationTask.update({
-    where: { id: taskId },
-    data: {
-      status: "PENDING",
-      errorMessage: null,
-      completedAt: null,
-      outputPayload: {
-        ...((task.outputPayload as Record<string, unknown> | null) ?? {}),
-        currentStep: "retry_queued",
-      } as Prisma.InputJsonValue,
-    },
+  const canRetryBatchImages = task.taskType === "GENERATE" && task.sectionId === null;
+  if (!canRetryBatchImages && !["BATCH_CREATE", "TRANSLATE_PAGE", "XHS_GENERATE"].includes(task.taskType)) {
+    throw new Error("This task type does not support retry.");
+  }
+  if (task.status !== "FAILED" && task.status !== "CANCELED") {
+    throw new Error("Only failed or canceled tasks can be retried.");
+  }
+  if (canRetryBatchImages) {
+    // This retry only fills missing images; an existing image is never replaced.
+    return createGenerateAllSectionsTask({ projectId: task.projectId, mode: "missing", retryOfTaskId: taskId }, credentials);
+  }
+  if (task.taskType === "BATCH_CREATE" && (!Array.isArray(input.files) || input.files.length === 0)) {
+    throw new Error("This task has no files to retry.");
+  }
+  if (task.taskType === "XHS_GENERATE" && (!input.plan || typeof input.plan !== "object")) {
+    throw new Error("This task has no plan to retry.");
+  }
+  // Never revive the old ID: its handler may still be returning from an
+  // external request. createTask atomically deduplicates active retry attempts.
+  const retryTask = await createTask({
+    projectId: task.projectId,
+    sectionId: task.sectionId,
+    taskType: task.taskType,
+    status: "PENDING",
+    inputPayload: { ...input, retryOfTaskId: taskId },
+    outputPayload: { currentStep: "retry_queued" },
   });
 
   if (task.taskType === "BATCH_CREATE") {
     const files = Array.isArray(input.files) ? (input.files as StoredBatchFile[]) : [];
     const autoGenerateImages = input.autoGenerateImages === true;
-    runTaskInBackground(() => runWithProviderCredentials(credentials, () => runBatchCreateTask(taskId, files, autoGenerateImages)));
-    return getTask(taskId);
+    runTaskInBackground(() => runWithProviderCredentials(credentials, () => runBatchCreateTask(retryTask.id, files, autoGenerateImages)));
+    return getTask(retryTask.id);
   }
 
   if (task.taskType === "TRANSLATE_PAGE") {
     runTaskInBackground(() =>
       runWithProviderCredentials(credentials, () =>
-        runTranslatePageTask(taskId, {
+        runTranslatePageTask(retryTask.id, {
           projectId: String(input.projectId ?? task.projectId),
           targetLanguage: normalizeContentLanguage(input.targetLanguage),
           referenceAssetIds: Array.isArray(input.referenceAssetIds) ? (input.referenceAssetIds as string[]) : [],
         }),
       ),
     );
-    return getTask(taskId);
+    return getTask(retryTask.id);
   }
 
   if (task.taskType === "XHS_GENERATE") {
     runTaskInBackground(() =>
       runWithProviderCredentials(credentials, () =>
-        runXiaohongshuGenerateTask(taskId, {
+        runXiaohongshuGenerateTask(retryTask.id, {
           plan: input.plan as XiaohongshuPlan,
           imageAspectRatio: input.imageAspectRatio as XiaohongshuImageAspectRatio,
           referenceImages: Array.isArray(input.referenceImages) ? (input.referenceImages as string[]) : [],
         }),
       ),
     );
-    return getTask(taskId);
+    return getTask(retryTask.id);
   }
 
   throw new Error("This task type does not support retry.");

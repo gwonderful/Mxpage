@@ -15,5 +15,10 @@ assert.match(snapshotService, /mergeSnapshotValue\(current\.modelSnapshot, snaps
 assert.match(projectService, /patchProjectModelSnapshot\(projectId, modelSnapshot\)/);
 assert.match(analysisService, /patchProjectModelSnapshot\(projectId, \{[\s\S]*analysisModelId: model/);
 assert.doesNotMatch(analysisService, /modelSnapshot: \{[\s\S]*analysisModelId: model/);
-assert.match(plannerService, /patchProjectModelSnapshot\(projectId, \{ previewConfig \}\)/);
+// Planning now commits preview settings together with sections; it must not
+// change configuration before a model/transaction failure. Runtime rollback
+// and preservation checks live in planning-integrity.test.cjs.
+assert.doesNotMatch(plannerService, /patchProjectModelSnapshot\(projectId, \{ previewConfig \}\)/);
+assert.match(plannerService, /savePlannedSections\(task\.id, projectId, sections, \{[\s\S]*?previewConfig,/);
+assert.match(plannerService, /modelSnapshot: \{ \.\.\.snapshot, \.\.\.snapshotPatch \}/);
 assert.doesNotMatch(outputConfigCard, /\.\.\.snapshot/);
